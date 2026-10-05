@@ -1,0 +1,505 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Modleo — AI workspace</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono&display=swap" rel="stylesheet">
+<style>
+@property --a{syntax:'<angle>';initial-value:0deg;inherits:false}
+:root{--bg:#0a0707;--panel:rgba(255,255,255,.045);--line:rgba(255,255,255,.1);--tx:#f6f2f2;--mut:#a89a9a;--v:#ff2d2d;--c:#ff3b3b;--p:#ff5c5c;--r:16px}
+*{box-sizing:border-box;margin:0}
+html,body{height:100%}
+body{font-family:'Bricolage Grotesque',system-ui,sans-serif;background:var(--bg);color:var(--tx);display:flex;overflow:hidden}
+body:before,body:after{content:"";position:fixed;width:60vmax;height:60vmax;border-radius:50%;filter:blur(110px);opacity:.28;z-index:-1;animation:drift 22s ease-in-out infinite alternate}
+body:before{background:var(--v);top:-25vmax;left:-15vmax}
+body:after{background:var(--c);bottom:-30vmax;right:-15vmax;animation-delay:-9s}
+@keyframes drift{to{transform:translate(8vmax,6vmax) scale(1.15)}}
+aside{width:280px;flex:none;padding:16px;display:flex;flex-direction:column;gap:12px;background:var(--panel);backdrop-filter:blur(18px);border-right:1px solid var(--line);transition:transform .35s cubic-bezier(.2,.9,.3,1)}
+.brand{font-weight:800;font-size:1.5rem;letter-spacing:-.03em;background:linear-gradient(90deg,var(--c),var(--v),var(--p));-webkit-background-clip:text;background-clip:text;color:transparent}
+button{font:inherit;color:inherit;cursor:pointer}
+.btn{border:1px solid var(--line);background:var(--panel);padding:10px 14px;border-radius:12px;transition:.2s}
+.btn:hover{border-color:var(--v);background:rgba(255,45,45,.15);transform:translateY(-1px)}
+.btn:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{outline:2px solid var(--c);outline-offset:2px}
+#chats{flex:1;overflow:auto;display:flex;flex-direction:column;gap:6px}
+.chat{padding:9px 12px;border-radius:10px;font-size:.92rem;display:flex;justify-content:space-between;gap:8px;cursor:pointer;color:var(--mut);transition:.2s}
+.chat:hover,.chat.on{background:rgba(255,45,45,.18);color:var(--tx)}
+.chat span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.chat i{font-style:normal;opacity:0}.chat:hover i{opacity:1}
+main{flex:1;display:flex;flex-direction:column;min-width:0}
+header{display:flex;gap:10px;align-items:center;padding:14px 20px;border-bottom:1px solid var(--line)}
+select,input,textarea{font:inherit;color:var(--tx);background:rgba(0,0,0,.35);border:1px solid var(--line);border-radius:12px;padding:10px 12px;width:100%}
+header select{max-width:340px}
+#menu{display:none}
+#log{flex:1;overflow:auto;padding:24px 20px;display:flex;flex-direction:column;gap:18px;scroll-behavior:smooth}
+.empty{margin:auto;text-align:center;max-width:520px}
+.empty h1{font-size:clamp(2rem,6vw,3.6rem);letter-spacing:-.04em;line-height:1;font-weight:800;background:linear-gradient(100deg,#fff 20%,var(--c) 55%,var(--p));-webkit-background-clip:text;background-clip:text;color:transparent}
+.empty p{color:var(--mut);margin:14px 0 20px}
+.msg{max-width:min(760px,92%);padding:13px 16px;border-radius:var(--r);line-height:1.6;white-space:pre-wrap;word-wrap:break-word;animation:pop .45s cubic-bezier(.2,1.2,.4,1)}
+@keyframes pop{from{opacity:0;transform:translateY(14px) scale(.97)}}
+.msg.user{align-self:flex-end;background:linear-gradient(135deg,rgba(255,45,45,.45),rgba(255,60,60,.25));border:1px solid rgba(255,45,45,.5)}
+.msg.assistant{align-self:flex-start;background:var(--panel);border:1px solid var(--line)}
+.msg pre{background:#090404;border:1px solid var(--line);padding:12px;border-radius:10px;overflow:auto;margin:8px 0;font:.85rem 'JetBrains Mono',monospace}
+.msg code{font-family:'JetBrains Mono',monospace;background:rgba(255,255,255,.08);padding:1px 5px;border-radius:5px;font-size:.88em}
+.msg pre code{background:none;padding:0}
+.dots span{display:inline-block;width:7px;height:7px;margin-right:4px;border-radius:50%;background:var(--c);animation:b 1s infinite}
+.dots span:nth-child(2){animation-delay:.15s}.dots span:nth-child(3){animation-delay:.3s}
+@keyframes b{50%{transform:translateY(-6px);opacity:.4}}
+.err{color:#ff9a9a}
+form#f{display:flex;gap:10px;padding:14px 20px 20px;align-items:flex-end}
+textarea{resize:none;max-height:180px;min-height:48px}
+.send{position:relative;width:52px;height:48px;border:0;border-radius:14px;background:var(--bg);flex:none;display:grid;place-items:center;font-size:1.2rem;isolation:isolate}
+.send:before{content:"";position:absolute;inset:-2px;border-radius:16px;z-index:-2;background:conic-gradient(from var(--a),var(--v),var(--c),var(--p),var(--v));animation:spin 3s linear infinite}
+.send:after{content:"";position:absolute;inset:1px;border-radius:13px;background:var(--bg);z-index:-1}
+@keyframes spin{to{--a:360deg}}
+dialog{margin:auto;width:min(680px,94vw);max-height:90vh;overflow:auto;background:#1a0b0b;color:var(--tx);border:1px solid var(--line);border-radius:20px;padding:22px}
+dialog::backdrop{background:rgba(9,4,4,.7);backdrop-filter:blur(6px)}
+dialog[open]{animation:pop .35s cubic-bezier(.2,1.2,.4,1)}
+.row{display:grid;gap:8px;margin:10px 0}
+.prov{border:1px solid var(--line);border-radius:14px;padding:12px;margin:10px 0;display:flex;justify-content:space-between;gap:10px;align-items:center}
+.prov small{color:var(--mut);display:block;word-break:break-all}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.chips button{font-size:.8rem;padding:5px 10px}
+h3{margin:14px 0 4px}
+.note{color:var(--mut);font-size:.82rem;line-height:1.5}
+body.locked aside,body.locked main{display:none}
+#login{position:fixed;inset:0;display:none;place-items:center;z-index:50;padding:16px}
+body.locked #login{display:grid}
+.lg{width:min(380px,100%);padding:30px 26px;border-radius:22px;background:var(--panel);backdrop-filter:blur(20px);border:1px solid var(--line);display:grid;gap:12px;animation:pop .5s cubic-bezier(.2,1.2,.4,1)}
+.lg h1{font-size:2.4rem;font-weight:800;letter-spacing:-.04em;background:linear-gradient(100deg,#fff 10%,var(--c),var(--v));-webkit-background-clip:text;background-clip:text;color:transparent}
+.lg p{color:var(--mut);font-size:.9rem;margin-bottom:6px}
+.lg .go{border:0;border-radius:12px;padding:12px;font-weight:600;background:linear-gradient(90deg,var(--v),var(--c));color:#fff;transition:.2s}
+.lg .go:hover{filter:brightness(1.15);transform:translateY(-1px)}
+.lg.shake{animation:sh .4s}
+@keyframes sh{25%{transform:translateX(-8px)}75%{transform:translateX(8px)}}
+.mp{position:relative;flex:none;max-width:60%}
+#mbtn{display:flex;align-items:center;gap:10px;text-align:left;max-width:100%}
+.dot{width:10px;height:10px;border-radius:50%;background:var(--c);box-shadow:0 0 12px var(--c);flex:none}
+.mt{display:grid;min-width:0}.mt b{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:260px}.mt small{color:var(--mut);font-size:.75rem}
+#mpanel{display:none;position:absolute;top:calc(100% + 8px);left:0;width:min(400px,92vw);max-height:65vh;flex-direction:column;gap:8px;padding:10px;background:#1a0b0b;border:1px solid var(--line);border-radius:16px;z-index:20;box-shadow:0 20px 60px rgba(0,0,0,.6)}
+.mp.open #mpanel{display:flex;animation:pop .25s cubic-bezier(.2,1.2,.4,1)}
+#mlist{overflow:auto;display:flex;flex-direction:column;gap:2px;min-height:60px}
+.mgroup{padding:10px 10px 4px;color:var(--c);font-size:.8rem;font-weight:600}
+.mitem{padding:9px 12px;border-radius:10px;cursor:pointer;font-size:.92rem;word-break:break-all;border:1px solid transparent;transition:.15s}
+.mitem:hover{background:rgba(255,45,45,.18)}
+.mitem.on{background:rgba(255,45,45,.28);border-color:var(--v)}
+.mitem.on:after{content:" ✓";color:var(--c)}
+*{scrollbar-width:thin;scrollbar-color:#5a1414 transparent}
+body{background-image:radial-gradient(rgba(255,90,90,.09) 1px,transparent 1px);background-size:28px 28px}
+.brand,.lg h1,.empty h1{background-size:200% auto;animation:shine 5s ease-in-out infinite alternate}
+@keyframes shine{to{background-position:100% center}}
+header{position:relative}
+header:after{content:"";position:absolute;left:0;right:0;bottom:-1px;height:1px;background:linear-gradient(90deg,transparent,var(--v),var(--c),transparent);opacity:.8}
+#log{-webkit-mask-image:linear-gradient(transparent,#000 24px,#000 calc(100% - 24px),transparent);mask-image:linear-gradient(transparent,#000 24px,#000 calc(100% - 24px),transparent)}
+.btn,.go{position:relative;overflow:hidden}
+.btn:hover,.chat:hover,.mitem:hover,.prov:hover,.msg.assistant:hover{background-image:radial-gradient(170px circle at var(--x,50%) var(--y,50%),rgba(255,45,45,.24),transparent 70%)}
+.rp{position:absolute;width:20px;height:20px;margin:-10px 0 0 -10px;border-radius:50%;background:rgba(255,255,255,.38);transform:scale(0);animation:rip .6s ease-out;pointer-events:none}
+@keyframes rip{to{transform:scale(14);opacity:0}}
+#new{background:linear-gradient(90deg,var(--v),#c40000);border-color:transparent;font-weight:600;box-shadow:0 8px 24px rgba(255,45,45,.35)}
+#new:hover{filter:brightness(1.12)}
+#new:after{content:"";position:absolute;top:0;left:-60%;width:40%;height:100%;background:linear-gradient(100deg,transparent,rgba(255,255,255,.35),transparent);transform:skewX(-20deg);animation:sweep 3.5s infinite}
+@keyframes sweep{to{left:130%}}
+textarea:focus,#msearch:focus,.lg input:focus{box-shadow:0 0 0 3px rgba(255,45,45,.25),0 0 30px rgba(255,45,45,.3);border-color:var(--v);outline:none}
+.send{transition:transform .25s cubic-bezier(.2,1.4,.4,1)}.send:hover{transform:scale(1.08) rotate(-5deg)}.send:active{transform:scale(.94)}
+.msg.user{background:linear-gradient(135deg,#e11b1b,#a80000);border:0;box-shadow:0 10px 30px rgba(255,45,45,.3);color:#fff}
+.msg.assistant{border-left:3px solid var(--v)}
+.orb{width:92px;height:92px;margin:0 auto 22px;border-radius:50%;position:relative;background:radial-gradient(circle at 35% 30%,#ff9a9a,var(--c) 30%,var(--v) 65%,#4a0505);box-shadow:0 0 60px rgba(255,45,45,.7),inset -8px -10px 24px rgba(0,0,0,.45);animation:float 5s ease-in-out infinite}
+.orb:before{content:"";position:absolute;inset:-14px;border-radius:50%;background:conic-gradient(from var(--a),transparent 0 55%,var(--c),var(--p),transparent);-webkit-mask:radial-gradient(farthest-side,transparent calc(100% - 3px),#000 calc(100% - 2px));mask:radial-gradient(farthest-side,transparent calc(100% - 3px),#000 calc(100% - 2px));animation:spin 3s linear infinite}
+@keyframes float{50%{transform:translateY(-10px)}}
+.sug{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin:0 0 18px}.sug .btn{font-size:.85rem;border-radius:999px}
+.lg{position:relative}
+.lg:before{content:"";position:absolute;inset:-1px;border-radius:23px;padding:1px;background:conic-gradient(from var(--a),var(--v),transparent 30%,var(--c),transparent 70%,var(--v));-webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask-composite:exclude;animation:spin 4s linear infinite;pointer-events:none}
+body.calm *,body.calm *:before,body.calm *:after{animation:none!important;transition:none!important}
+.btn:hover{box-shadow:0 0 0 1px var(--v),0 0 22px rgba(255,45,45,.45)}
+#login{overflow:hidden}.lg{z-index:2}
+#dots{position:absolute;inset:0;display:grid;grid-template-columns:repeat(16,1fr);grid-template-rows:repeat(9,1fr);place-items:center;opacity:.6;pointer-events:none}
+.d{width:6px;height:6px;border-radius:50%;background:var(--v);box-shadow:0 0 10px var(--v)}
+.mq{position:absolute;left:0;display:flex;width:max-content;white-space:nowrap;font-size:clamp(3.5rem,11vw,8rem);font-weight:800;letter-spacing:-.03em;line-height:1;color:transparent;-webkit-text-stroke:1px rgba(255,45,45,.45);animation:mq 40s linear infinite;pointer-events:none}
+.mq.rev{animation-direction:reverse}
+@keyframes mq{to{transform:translateX(-50%)}}
+.tick{overflow:hidden;width:100%;margin-top:28px;-webkit-mask:linear-gradient(90deg,transparent,#000 15%,#000 85%,transparent);mask:linear-gradient(90deg,transparent,#000 15%,#000 85%,transparent)}
+.mq2{display:flex;width:max-content;white-space:nowrap;color:var(--mut);font-weight:600;animation:mq 26s linear infinite}
+.empty{max-width:640px;width:100%}
+.beam{position:relative;flex:1;border-radius:14px}
+.beam:before{content:"";position:absolute;inset:-1px;border-radius:15px;padding:1px;background:conic-gradient(from var(--a),transparent 0 70%,var(--v),#fff,transparent);-webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask-composite:exclude;animation:spin 3s linear infinite;pointer-events:none}
+#wipe{position:fixed;inset:0;background:var(--v);z-index:99;pointer-events:none;clip-path:circle(0 at 50% 60%)}
+#wipe.go{animation:wipe 1.1s cubic-bezier(.7,0,.2,1) forwards}
+@keyframes wipe{0%{clip-path:circle(0 at 50% 60%);opacity:1}50%{clip-path:circle(150% at 50% 60%);opacity:1}100%{clip-path:circle(150% at 50% 60%);opacity:0}}
+.ctl{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:10px;font-size:.85rem;color:var(--mut)}.ctl b{color:var(--tx);font-weight:600}.ctl input{flex-basis:100%}
+input[type=range]{-webkit-appearance:none;appearance:none;padding:0;height:6px;border:0;border-radius:9px;background:linear-gradient(90deg,#a80000,var(--p))}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:18px;height:18px;border-radius:50%;background:#fff;box-shadow:0 0 0 4px rgba(255,45,45,.5),0 0 14px var(--v);cursor:pointer}
+input[type=range]::-moz-range-thumb{width:18px;height:18px;border:0;border-radius:50%;background:#fff;box-shadow:0 0 0 4px rgba(255,45,45,.5)}
+.sw{display:flex;align-items:center;gap:10px;font-size:.85rem;color:var(--mut);cursor:pointer;position:relative}
+.sw input{position:absolute;opacity:0;width:0;padding:0}
+.sw i{width:44px;height:24px;border-radius:99px;background:#2a0c0c;border:1px solid var(--line);position:relative;transition:.3s;flex:none}
+.sw i:after{content:"";position:absolute;top:2px;left:2px;width:18px;height:18px;border-radius:50%;background:#fff;transition:.3s cubic-bezier(.2,1.4,.4,1)}
+.sw input:checked+i{background:var(--v);box-shadow:0 0 18px rgba(255,45,45,.7)}
+.sw input:checked+i:after{transform:translateX(20px)}
+.sw input:focus-visible+i{outline:2px solid var(--c);outline-offset:2px}
+/* ---- professional layer ---- */
+:root{--bg:#0a0707;--panel:#141010;--line:rgba(255,255,255,.09);--v:#e11b1b;--c:#ff3b3b;--p:#ff6b6b;--mut:#a09a9a}
+body{font-family:'Inter',system-ui,sans-serif;background-image:none;-webkit-font-smoothing:antialiased}
+body:before,body:after{opacity:.12}
+aside{background:#0e0909;backdrop-filter:none;width:272px}
+.logo{display:flex;align-items:center;gap:10px;font-weight:700;font-size:1.15rem;letter-spacing:-.01em}
+.mark{width:34px;height:34px;border-radius:10px;background:linear-gradient(135deg,var(--c),#9c0000);display:grid;place-items:center;font-weight:800;color:#fff;box-shadow:0 6px 18px rgba(225,27,27,.35)}
+.mark.big{width:56px;height:56px;font-size:1.5rem;border-radius:16px;margin:0 auto 18px}
+.lbl{font-size:.78rem;font-weight:600;color:var(--mut);padding:4px 4px 0}
+.btn{border-radius:10px;background:transparent}
+.btn:hover{background:rgba(255,255,255,.06);background-image:none;box-shadow:none;border-color:rgba(255,255,255,.2);transform:none}
+#new{background:var(--v);border-color:transparent;box-shadow:none;color:#fff;font-weight:600}
+#new:after{display:none}#new:hover{filter:brightness(1.1)}
+.chat:hover,.mitem:hover,.prov:hover,.msg.assistant:hover{background-image:none}
+.chat.on{background:rgba(225,27,27,.16)}
+.rp{display:none}
+.side-foot{display:grid;gap:12px;border-top:1px solid var(--line);padding-top:12px}
+.who{display:flex;align-items:center;gap:10px;font-size:.9rem}
+.av{width:30px;height:30px;border-radius:50%;background:linear-gradient(135deg,var(--c),#9c0000);display:grid;place-items:center;font-weight:600;flex:none}
+.who #un{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
+.ghost{background:none;border:0;color:var(--mut);cursor:pointer;font:inherit;font-size:.82rem}.ghost:hover{color:var(--c)}
+header{padding:12px 20px;background:rgba(10,7,7,.7);backdrop-filter:blur(10px)}
+header:after{display:none}
+header #sys{max-width:360px;margin-left:auto}
+.dot{background:var(--v);box-shadow:none}
+dialog,#mpanel{background:#141010}
+#log,form#f{padding-left:max(20px,calc((100% - 820px)/2));padding-right:max(20px,calc((100% - 820px)/2))}
+#log{-webkit-mask-image:none;mask-image:none;gap:22px;padding-top:28px}
+.msg{max-width:100%;border-radius:14px;animation-duration:.3s}
+.msg:before{content:attr(data-label);display:block;font-size:.75rem;font-weight:600;color:var(--mut);margin-bottom:6px}
+.msg.user{background:#1c1313;border:1px solid var(--line);box-shadow:none;color:var(--tx);max-width:80%}
+.msg.user:before{color:var(--c);text-align:right}
+.msg.assistant{background:transparent;border:0;border-left:2px solid var(--v);border-radius:0 10px 10px 0;padding-left:16px}
+.beam:before{display:none}
+.beam textarea{background:#141010;border-radius:14px;padding:14px 16px}
+textarea:focus,#msearch:focus,.lg input:focus{box-shadow:0 0 0 3px rgba(225,27,27,.22);border-color:var(--v)}
+.send{background:var(--v);border-radius:12px}.send:before,.send:after{display:none}.send:hover{transform:none;background:#ff3030}
+.empty h1{background:none;color:var(--tx);-webkit-text-fill-color:currentColor;animation:none;font-size:clamp(1.8rem,4vw,2.5rem);letter-spacing:-.03em;font-weight:700}
+.cards{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:22px 0}
+.card{text-align:left;padding:16px;border-radius:14px;border:1px solid var(--line);background:var(--panel);display:grid;gap:6px;transition:.2s}
+.card:hover{border-color:var(--v);transform:translateY(-2px)}
+.card b{font-weight:600}.card span{color:var(--mut);font-size:.85rem;line-height:1.45}
+#wipe{background:var(--bg)}
+#login{padding:0;place-items:stretch;grid-template-columns:1.15fr 1fr}
+.hero{display:flex;flex-direction:column;justify-content:space-between;padding:48px;background:linear-gradient(160deg,#2a0606,#130808 55%,#0a0707);border-right:1px solid var(--line);position:relative;overflow:hidden}
+.hero:before{content:"";position:absolute;width:560px;height:560px;right:-200px;top:-180px;background:radial-gradient(closest-side,rgba(225,27,27,.4),transparent)}
+.hero>*{position:relative}
+.hero h1{font-size:clamp(2rem,3.4vw,3rem);line-height:1.1;letter-spacing:-.03em;font-weight:700;max-width:520px}
+.hero p{color:#c8bcbc;max-width:460px;margin:16px 0 28px;line-height:1.6}
+.hero small{color:var(--mut)}
+.feats{list-style:none;padding:0;display:grid;gap:18px;margin:0}
+.feats li{display:grid;gap:2px;padding-left:36px;position:relative}
+.feats li:before{content:"✓";position:absolute;left:0;top:1px;width:22px;height:22px;border-radius:50%;background:rgba(225,27,27,.2);color:var(--c);display:grid;place-items:center;font-size:.8rem}
+.feats b{font-weight:600}.feats span{color:var(--mut);font-size:.9rem}
+.auth{display:grid;place-items:center;padding:32px;background:var(--bg)}
+.lg{background:none;backdrop-filter:none;border:0;padding:0;width:min(380px,100%);gap:14px;animation:none}
+.lg:before{display:none}
+.lg h2{font-size:1.75rem;font-weight:700;letter-spacing:-.02em}
+.lg label{display:grid;gap:6px;font-size:.85rem;font-weight:500;color:var(--mut)}
+.pw{position:relative;display:block}.pw input{padding-right:64px}
+.pw .ghost{position:absolute;right:10px;top:50%;transform:translateY(-50%)}
+.lg .go{background:var(--v);border-radius:10px;padding:12px;font-weight:600}.lg .go:hover{filter:brightness(1.1);transform:none}
+.m-logo{display:none}
+@media(max-width:860px){#login{grid-template-columns:1fr}.hero{display:none}.m-logo{display:flex;margin-bottom:8px}}
+.errbox{background:rgba(225,27,27,.08);border:1px solid rgba(255,82,82,.4);border-radius:12px;padding:12px 14px;white-space:normal;margin-top:6px}
+.errbox b{color:var(--c)}.errbox p{margin:4px 0;color:var(--tx)}
+.errbox small{display:block;color:var(--mut);margin-top:6px;word-break:break-word}
+.errbox .acts{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}.errbox a.btn{text-decoration:none;display:inline-block;color:inherit;font-size:.9rem}
+.swnote{margin-top:10px;color:var(--mut);font-size:.82rem}
+@media(max-width:760px){.cards{grid-template-columns:1fr}header #sys{display:none}}
+@media(max-width:760px){aside{position:fixed;inset:0 auto 0 0;z-index:5;transform:translateX(-100%);background:#150808}aside.open{transform:none}#menu{display:block}}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body class="locked">
+<div id="wipe"></div>
+<div id="login">
+  <section class="hero">
+    <div class="logo"><span class="mark">M</span>Modleo</div>
+    <div>
+      <h1>One workspace for every AI model.</h1>
+      <p>Connect your own gateways and free API providers, switch models in one click, and keep your keys safely on the server.</p>
+      <ul class="feats">
+        <li><b>Bring your own APIs</b><span>Any OpenAI-compatible endpoint or gateway.</span></li>
+        <li><b>Switch models mid-conversation</b><span>Search and pick from every connected provider.</span></li>
+        <li><b>Private by design</b><span>API keys stay on the server, never in your browser.</span></li>
+      </ul>
+    </div>
+    <small>© Modleo</small>
+  </section>
+  <section class="auth">
+    <form class="lg" id="lf">
+      <div class="logo m-logo"><span class="mark">M</span>Modleo</div>
+      <h2>Sign in</h2><p>Welcome back. Enter your details to continue.</p>
+      <label>Username<input id="lu" autocomplete="username" required></label>
+      <label>Password<span class="pw"><input id="lp" type="password" autocomplete="current-password" required><button type="button" class="ghost" id="eye">Show</button></span></label>
+      <div class="err" id="le" style="min-height:1.2em;font-size:.88rem"></div>
+      <button class="go">Sign in</button>
+    </form>
+  </section>
+</div>
+<aside id="side">
+  <div class="logo"><span class="mark">M</span>Modleo</div>
+  <button class="btn" id="new">+ New chat</button>
+  <div class="lbl">Recent chats</div>
+  <div id="chats"></div>
+  <div class="side-foot">
+    <label class="ctl">Creativity <b id="tv">auto</b><input type="range" id="temp" min="0" max="2" step="0.1" value="0.7"></label>
+    <label class="sw"><input type="checkbox" id="calm"><i></i><span>Reduce motion</span></label>
+    <label class="sw"><input type="checkbox" id="fb"><i></i><span>Auto-switch model on errors</span></label>
+    <button class="btn" id="open-set">Providers &amp; keys</button>
+    <div class="who"><span class="av" id="av">D</span><span id="un">user</span><button class="ghost" id="out">Sign out</button></div>
+  </div>
+</aside>
+<main>
+  <header>
+    <button class="btn" id="menu" aria-label="Menu">☰</button>
+    <div class="mp" id="mp">
+      <button type="button" class="btn" id="mbtn" aria-haspopup="listbox">
+        <span class="dot"></span><span class="mt"><b id="mlabel">Choose a model</b><small id="mprov"></small></span><span>▾</span>
+      </button>
+      <div id="mpanel">
+        <input id="msearch" placeholder="Search models…" autocomplete="off">
+        <div id="mlist" role="listbox"></div>
+        <button type="button" class="btn" id="madd">+ Add provider or models</button>
+      </div>
+    </div>
+    <select id="model" hidden></select>
+    <input id="sys" placeholder="System prompt (optional)">
+  </header>
+  <div id="log"></div>
+  <form id="f">
+    <div class="beam"><textarea id="in" rows="1" placeholder="Message Modleo…"></textarea></div>
+    <button class="send" title="Send" aria-label="Send">➤</button>
+  </form>
+</main>
+
+<dialog id="set">
+  <h2>Providers &amp; keys</h2>
+  <p class="note">Add any OpenAI-compatible API or gateway. Keys are stored on your Modleo server and used only by the backend, so your browser never sees them.</p>
+  <div id="plist"></div>
+  <h3>Add a provider</h3>
+  <div class="chips" id="presets"></div>
+  <div class="row">
+    <input id="pn" placeholder="Name (e.g. My gateway)">
+    <input id="pb" placeholder="Base URL (e.g. https://api.openai.com/v1)">
+    <input id="pk" type="password" placeholder="API key">
+    <input id="pm" placeholder="Models, comma separated (or leave empty and press Fetch models)">
+  </div>
+  <div style="display:flex;gap:8px;flex-wrap:wrap">
+    <button class="btn" id="add">Save provider</button>
+    <button class="btn" id="fetch">Fetch models</button>
+    <button class="btn" id="close" style="margin-left:auto">Close</button>
+  </div>
+  <h3>Account</h3>
+  <div class="row"><input id="nu" placeholder="New username"><input id="np" type="password" placeholder="New password (min 6 characters)"></div>
+  <button class="btn" id="upd" type="button">Update login</button>
+  <p class="note" id="status" style="margin-top:10px"></p>
+</dialog>
+
+<script>
+const $=s=>document.querySelector(s);
+const load=(k,d)=>{try{return JSON.parse(localStorage.getItem(k))??d}catch{return d}};
+let S=load('modleo',{chats:[],active:null,model:''});S.providers=[];
+const save=()=>{try{localStorage.setItem('modleo',JSON.stringify(S,(k,v)=>k==='providers'?undefined:v))}catch{}};
+const uid=()=>Math.random().toString(36).slice(2,9);
+const PRESETS={OpenRouter:'https://openrouter.ai/api/v1',Groq:'https://api.groq.com/openai/v1',Gemini:'https://generativelanguage.googleapis.com/v1beta/openai',Together:'https://api.together.xyz/v1',Mistral:'https://api.mistral.ai/v1',Cerebras:'https://api.cerebras.ai/v1',OpenAI:'https://api.openai.com/v1'};
+const esc=t=>t.replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+const md=t=>esc(t).replace(/```(\w*)\n?([\s\S]*?)(```|$)/g,'<pre><code>$2</code></pre>').replace(/`([^`\n]+)`/g,'<code>$1</code>').replace(/\*\*([^*\n]+)\*\*/g,'<b>$1</b>');
+const status=t=>$('#status').textContent=t;
+const J={'Content-Type':'application/json'};
+let ctrl=null;
+
+/* ---------- backend API ---------- */
+async function api(path,method='GET',body){
+  const r=await fetch('/api'+path,{method,headers:J,credentials:'same-origin',body:body?JSON.stringify(body):undefined});
+  if(r.status===401){document.body.classList.add('locked');throw new Error('session')}
+  return r;
+}
+const errOf=async r=>{try{return (await r.json()).error}catch{return null}};
+const netErr=()=>({kind:'net',title:'Cannot reach the Modleo server',hint:'Check that the backend is running, then reload the page.',scope:'none',msg:''});
+
+/* ---------- auth ---------- */
+function paintUser(){$('#un').textContent=S.user||'';$('#av').textContent=(S.user||'?')[0].toUpperCase()}
+async function enter(u,anim){
+  S.user=u;paintUser();
+  try{const r=await api('/providers');S.providers=await r.json()}catch{}
+  renderAll();
+  if(anim){const w=$('#wipe');w.classList.remove('go');void w.offsetWidth;w.classList.add('go');setTimeout(()=>document.body.classList.remove('locked'),450)}
+  else document.body.classList.remove('locked');
+}
+$('#lf').onsubmit=async e=>{e.preventDefault();
+  try{
+    const r=await fetch('/api/login',{method:'POST',headers:J,credentials:'same-origin',body:JSON.stringify({username:$('#lu').value.trim(),password:$('#lp').value})});
+    if(r.ok){const j=await r.json();$('#le').textContent='';$('#lp').value='';await enter(j.username,true)}
+    else{$('#le').textContent=r.status===429?'Too many attempts. Try again in a few minutes.':'Wrong username or password.';const f=$('#lf');f.classList.remove('shake');void f.offsetWidth;f.classList.add('shake')}
+  }catch{$('#le').textContent='Cannot reach the server.'}
+};
+$('#eye').onclick=()=>{const p=$('#lp'),h=p.type==='password';p.type=h?'text':'password';$('#eye').textContent=h?'Hide':'Show'};
+$('#out').onclick=async()=>{try{await fetch('/api/logout',{method:'POST',credentials:'same-origin'})}catch{}S.providers=[];document.body.classList.add('locked');$('#side').classList.remove('open')};
+$('#upd').onclick=async()=>{const u=$('#nu').value.trim(),p=$('#np').value;
+  if(u.length<3||p.length<6)return status('Username needs 3+ characters and password 6+.');
+  const r=await api('/account','POST',{username:u,password:p});
+  if(r.ok){S.user=(await r.json()).username;paintUser();$('#nu').value=$('#np').value='';status('Login updated.')}else status('Could not update login.')};
+
+/* ---------- chats & models ---------- */
+const chat=()=>S.chats.find(c=>c.id===S.active);
+function renderModels(){
+  const sel=$('#model');sel.innerHTML='';
+  S.providers.forEach(p=>p.models.forEach(m=>sel.append(new Option(m,p.id+'|'+m))));
+  if(![...sel.options].some(o=>o.value===S.model))S.model=sel.options[0]?.value||'';
+  sel.value=S.model;paintPicker();
+}
+function paintPicker(){
+  const q=($('#msearch').value||'').toLowerCase(),list=$('#mlist');list.innerHTML='';
+  const [pid,...r]=(S.model||'').split('|'),cur=r.join('|'),cp=S.providers.find(p=>p.id===pid);
+  $('#mlabel').textContent=cur||'Choose a model';$('#mprov').textContent=cp?'from '+cp.name:'No model selected';
+  let n=0;
+  S.providers.forEach(p=>{
+    const ms=p.models.filter(m=>m.toLowerCase().includes(q)||p.name.toLowerCase().includes(q));if(!ms.length)return;
+    const g=document.createElement('div');g.className='mgroup';g.textContent=p.name+' ('+ms.length+')';list.append(g);
+    ms.forEach(m=>{n++;const d=document.createElement('div');d.className='mitem'+(p.id+'|'+m===S.model?' on':'');d.textContent=m;d.setAttribute('role','option');
+      d.onclick=()=>{S.model=p.id+'|'+m;$('#model').value=S.model;save();$('#mp').classList.remove('open');paintPicker()};list.append(d)});
+  });
+  if(!n){const d=document.createElement('div');d.className='mgroup';d.textContent=S.providers.length?'No models match your search.':'No models yet. Add a provider first.';list.append(d)}
+}
+$('#mbtn').onclick=()=>{const o=$('#mp').classList.toggle('open');if(o){$('#msearch').value='';paintPicker();$('#msearch').focus()}};
+$('#msearch').oninput=paintPicker;
+$('#madd').onclick=()=>{$('#mp').classList.remove('open');openSet()};
+document.addEventListener('click',e=>{if(!e.target.closest('#mp'))$('#mp').classList.remove('open')});
+document.addEventListener('keydown',e=>{if(e.key==='Escape')$('#mp').classList.remove('open')});
+function renderChats(){
+  $('#chats').innerHTML='';
+  S.chats.forEach(c=>{const d=document.createElement('div');d.className='chat'+(c.id===S.active?' on':'');
+    d.innerHTML=`<span>${esc(c.title)}</span><i title="Delete">✕</i>`;
+    d.onclick=e=>{if(e.target.tagName==='I'){S.chats=S.chats.filter(x=>x.id!==c.id);if(S.active===c.id)S.active=S.chats[0]?.id||null}else S.active=c.id;save();renderAll();$('#side').classList.remove('open')};
+    $('#chats').append(d)});
+}
+function bubble(role,text){const d=document.createElement('div');d.className='msg '+role;d.dataset.label=role==='user'?'You':'Modleo';d.innerHTML=role==='user'?esc(text):md(text);$('#log').append(d);d.scrollIntoView({block:'end'});return d}
+function renderLog(){
+  const log=$('#log');log.innerHTML='';const c=chat();
+  if(!c||!c.msgs.length){
+    log.innerHTML='<div class="empty"><div class="mark big">M</div><h1>How can I help you today?</h1><p id="stat"></p><div class="cards"><button class="card" data-q="Explain how neural networks learn, in simple words."><b>Explain a concept</b><span>Get a clear, simple explanation of any topic.</span></button><button class="card" data-q="Write a Python script that renames files by date."><b>Write code</b><span>Scripts, snippets and debugging help.</span></button><button class="card" data-q="Help me plan a productive week with clear priorities."><b>Plan your work</b><span>Turn goals into a practical schedule.</span></button></div><button class="btn" id="e-set"></button></div>';
+    const np=S.providers.length,nm=S.providers.reduce((a,p)=>a+p.models.length,0);
+    $('#stat').textContent=np?np+' provider'+(np>1?'s':'')+' connected, '+nm+' models available':'No provider connected yet. Add one to start chatting.';
+    $('#e-set').textContent=np?'Manage providers':'Connect a provider';$('#e-set').onclick=openSet;
+    log.querySelectorAll('.cards .card').forEach(b=>b.onclick=()=>send(b.dataset.q));return}
+  c.msgs.forEach(m=>bubble(m.role,m.content));
+}
+function renderAll(){renderModels();renderChats();renderLog()}
+function newChat(){const c={id:uid(),title:'New chat',msgs:[]};S.chats.unshift(c);S.active=c.id;save();renderAll()}
+
+/* ---------- sending: UI -> backend -> provider ---------- */
+function candidates(sel){
+  const [pid,...r]=sel.split('|'),m0=r.join('|'),all=[];
+  S.providers.forEach(p=>p.models.forEach(m=>all.push([p,m])));
+  return [...all.filter(([p,m])=>p.id===pid&&m===m0),...all.filter(([p,m])=>p.id===pid&&m!==m0),...all.filter(([p])=>p.id!==pid)];
+}
+async function attempt(p,model,msgs,out,st){
+  const r=await fetch('/api/chat',{method:'POST',signal:ctrl.signal,headers:J,credentials:'same-origin',
+    body:JSON.stringify({provider_id:p.id,model,messages:msgs,...(S.temp!==undefined?{temperature:S.temp}:{})})});
+  if(r.status===401){document.body.classList.add('locked');const e=new Error('session');e.info={kind:'session',title:'Session expired',hint:'Please sign in again.',scope:'none',msg:''};throw e}
+  if(!r.ok){const e=new Error('http');e.info=(await errOf(r))||netErr();throw e}
+  const rd=r.body.getReader(),dec=new TextDecoder();let buf='';
+  for(;;){const {done,value}=await rd.read();if(done)break;buf+=dec.decode(value,{stream:true});
+    const lines=buf.split('\n');buf=lines.pop();
+    for(const l of lines){const x=l.trim();if(!x.startsWith('data:'))continue;const d=x.slice(5).trim();if(d==='[DONE]')continue;
+      try{const j=JSON.parse(d);st.acc+=j.choices?.[0]?.delta?.content||j.choices?.[0]?.message?.content||'';out.innerHTML=md(st.acc);out.scrollIntoView({block:'end'})}catch{}}}
+  if(!st.acc){const e=new Error('empty');e.info={kind:'empty',title:'Empty response',hint:'The model returned nothing. Try another model.',scope:'model',msg:''};throw e}
+}
+function showErr(out,tried,st){
+  const last=tried[tried.length-1],i=last.info;
+  let h='<div class="errbox"><b>'+esc(i.title)+'</b><p>'+esc(i.hint||'')+'</p>';
+  if(i.msg)h+='<small>'+esc(i.msg)+'</small>';
+  if(tried.length>1)h+='<small>Tried: '+tried.map(t=>esc(t.model)+' ('+esc(t.p.name)+')').join(', ')+'</small>';
+  h+='<small>Provider: '+esc(last.p.base_url)+'</small><div class="acts">';
+  if(i.kind==='quota'||i.kind==='auth'){let o='';try{o=new URL(last.p.base_url).origin}catch{}if(o)h+='<a class="btn" href="'+esc(o)+'" target="_blank" rel="noopener">Open provider site</a>'}
+  h+='<button class="btn" data-act="set">Providers &amp; keys</button>'+(S.fallback?'':'<button class="btn" data-act="fb">Turn on auto-switch</button>')+'</div></div>';
+  out.innerHTML=(st.acc?md(st.acc):'')+h;
+}
+async function send(text){
+  if(!text.trim()||ctrl)return;
+  const sel=$('#model').value||'';
+  if(!S.providers.find(x=>x.id===sel.split('|')[0])){openSet();return}
+  if(!chat())newChat();
+  const c=chat();if(!c.msgs.length)c.title=text.slice(0,40);
+  c.msgs.push({role:'user',content:text});
+  if(c.msgs.length===1)$('#log').innerHTML='';
+  bubble('user',text);
+  const out=bubble('assistant','');const dots='<div class="dots"><span></span><span></span><span></span></div>';out.innerHTML=dots;
+  const msgs=[...($('#sys').value?[{role:'system',content:$('#sys').value}]:[]),...c.msgs];
+  ctrl=new AbortController();
+  const st={acc:''},tried=[],skipP=new Set(),skipM=new Set();let done=false;
+  for(const [p,model] of candidates(sel)){
+    if(skipP.has(p.id)||skipM.has(p.id+'|'+model))continue;
+    if(tried.length>=4)break;
+    try{
+      await attempt(p,model,msgs,out,st);
+      c.msgs.push({role:'assistant',content:st.acc});
+      if(tried.length)out.innerHTML=md(st.acc)+'<div class="swnote">Answered by '+esc(model)+' ('+esc(p.name)+') after '+tried.length+' failed attempt'+(tried.length>1?'s':'')+'.</div>';
+      done=true;break;
+    }catch(e){
+      if(e.name==='AbortError'){if(st.acc)c.msgs.push({role:'assistant',content:st.acc});done=true;break}
+      const info=e.info||netErr();tried.push({p,model,info});
+      if(!S.fallback||st.acc||info.scope==='none')break;
+      if(info.scope==='provider')skipP.add(p.id);else skipM.add(p.id+'|'+model);
+      out.innerHTML=dots;
+    }
+  }
+  if(!done&&tried.length){if(st.acc)c.msgs.push({role:'assistant',content:st.acc});showErr(out,tried,st)}
+  ctrl=null;save();renderChats();
+}
+
+/* ---------- providers dialog ---------- */
+function renderProv(){
+  $('#plist').innerHTML='';
+  S.providers.forEach(p=>{const d=document.createElement('div');d.className='prov';
+    d.innerHTML=`<div><b>${esc(p.name)}</b><small>${esc(p.base_url)} · ${p.models.length} models${p.has_key?'':' · no key'}</small></div><div style="display:flex;gap:6px"><button class="btn tst">Test</button><button class="btn rm">Remove</button></div>`;
+    d.querySelector('.tst').onclick=async()=>{status('Testing '+p.name+'…');
+      try{const j=await (await api('/providers/'+p.id+'/test','POST')).json();
+        status(j.ok?'✓ '+p.name+' works.':'✗ '+p.name+': '+j.error.title+'. '+j.error.hint+(j.error.msg?' ('+j.error.msg+')':''))}catch{status('Could not run the test.')}};
+    d.querySelector('.rm').onclick=async()=>{await api('/providers/'+p.id,'DELETE');S.providers=S.providers.filter(x=>x.id!==p.id);renderProv();renderModels();renderLog()};
+    $('#plist').append(d)});
+}
+function openSet(){renderProv();$('#set').showModal()}
+$('#presets').innerHTML=Object.keys(PRESETS).map(k=>`<button class="btn" type="button" data-k="${k}">${k}</button>`).join('');
+$('#presets').onclick=e=>{const k=e.target.dataset.k;if(k){$('#pn').value=k;$('#pb').value=PRESETS[k]}};
+$('#fetch').onclick=async()=>{
+  const base=$('#pb').value.trim();if(!base)return status('Enter a base URL first.');
+  status('Fetching models…');
+  try{const r=await api('/models','POST',{base_url:base,api_key:$('#pk').value.trim()});
+    if(r.ok){const ids=(await r.json()).models;$('#pm').value=ids.join(', ');status(ids.length+' models found. Edit the list if you like, then Save provider.')}
+    else{const i=await errOf(r);status('Could not fetch models: '+(i?i.title+'. '+i.hint:'check the base URL')+' You can type model names manually.')}}
+  catch{status('Could not fetch models.')}
+};
+$('#add').onclick=async()=>{
+  const name=$('#pn').value.trim(),base=$('#pb').value.trim(),models=$('#pm').value.split(',').map(s=>s.trim()).filter(Boolean);
+  if(!name||!base||!models.length)return status('Name, base URL and at least one model are required.');
+  try{const r=await api('/providers','POST',{name,base_url:base,api_key:$('#pk').value.trim(),models});
+    if(r.ok){S.providers.push(await r.json());['pn','pb','pk','pm'].forEach(i=>$('#'+i).value='');renderProv();renderModels();renderLog();status('Saved.')}
+    else status('Could not save the provider. Check the base URL.')}catch{status('Could not save the provider.')}
+};
+$('#close').onclick=()=>$('#set').close();
+$('#open-set').onclick=openSet;
+
+/* ---------- misc UI ---------- */
+$('#new').onclick=()=>{newChat();$('#side').classList.remove('open')};
+$('#menu').onclick=()=>$('#side').classList.toggle('open');
+$('#f').onsubmit=e=>{e.preventDefault();const t=$('#in').value;
+  if(ctrl){ctrl.abort();return}
+  $('#in').value='';$('#in').style.height='';send(t)};
+$('#in').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();$('#f').requestSubmit()}});
+$('#in').addEventListener('input',e=>{e.target.style.height='auto';e.target.style.height=e.target.scrollHeight+'px'});
+$('#temp').oninput=e=>{S.temp=+e.target.value;$('#tv').textContent=e.target.value;save()};
+if(S.temp!==undefined){$('#temp').value=S.temp;$('#tv').textContent=S.temp}
+$('#calm').checked=!!S.calm;document.body.classList.toggle('calm',!!S.calm);
+$('#calm').onchange=e=>{S.calm=e.target.checked;document.body.classList.toggle('calm',S.calm);save()};
+$('#fb').checked=!!S.fallback;$('#fb').onchange=e=>{S.fallback=e.target.checked;save()};
+$('#log').addEventListener('click',e=>{const b=e.target.closest('[data-act]');if(!b)return;if(b.dataset.act==='set')openSet();if(b.dataset.act==='fb'){S.fallback=true;$('#fb').checked=true;save();b.remove()}});
+
+/* ---------- boot ---------- */
+renderAll();
+fetch('/api/me',{credentials:'same-origin'}).then(async r=>{if(r.ok)await enter((await r.json()).username,false)}).catch(()=>{});
+</script>
+</body>
+</html>
