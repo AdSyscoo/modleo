@@ -1,226 +1,1378 @@
-"""Modleo backend: Chat UI -> FastAPI -> third-party LLM API.
-Run:  pip install -r requirements.txt && uvicorn main:app --port 8000
 """
-import base64, hashlib, hmac, json, os, re, secrets, time
+Modleo backend
+Chat UI -> FastAPI -> third-party LLM API
+
+Run:
+    pip install -r requirements.txt
+    uvicorn main:app --host 0.0.0.0 --port 8000
+"""
+
+import base64
+import hashlib
+import hmac
+import ipaddress
+import json
+import os
+import re
+import secrets
+import socket
+import time
 from pathlib import Path
 from urllib.parse import urlparse
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
-DATA = Path(os.getenv("DATA_DIR", "data")); DATA.mkdir(parents=True, exist_ok=True)
+# ============================================================
+# CONFIG
+# ============================================================
+
+DATA = Path(os.getenv("DATA_DIR", "data"))
+DATA.mkdir(parents=True, exist_ok=True)
+
 STORE = DATA / "store.json"
-UA = os.getenv("UPSTREAM_UA", "curl/8.5.0")
-app = FastAPI(title="Modleo", docs_url=None, redoc_url=None)
 
-# ---------------- storage ----------------
-def _hash(pw: str, salt: str) -> str:
-    return hashlib.pbkdf2_hmac("sha256", pw.encode(), salt.encode(), 200_000).hex()
+UA = os.getenv(
+    "UPSTREAM_UA",
+    "Modleo/1.0 (+https://your-domain.example)"
+)
+
+REQUEST_TIMEOUT = float(os.getenv("REQUEST_TIMEOUT", "180"))
+CONNECT_TIMEOUT = float(os.getenv("CONNECT_TIMEOUT", "20"))
+
+app = FastAPI(
+    title="Modleo",
+    docs_url=None,
+    redoc_url=None,
+)
+
+# ============================================================
+# CORS
+# ============================================================
+
+# Example:
+# FRONTEND_ORIGINS=https://modleo.example.com,http://localhost:3000
+
+FRONTEND_ORIGINS = [
+    x.strip()
+    for x in os.getenv("FRONTEND_ORIGINS", "").split(",")
+    if x.strip()
+]
+
+if FRONTEND_ORIGINS:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=FRONTEND_ORIGINS,
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+        allow_headers=["Content-Type", "Authorization"],
+    )
+
+# ============================================================
+# STORAGE
+# ============================================================
+
+
+def _hash(password: str, salt: str) -> str:
+    return hashlib.pbkdf2_hmac(
+        "sha256",
+        password.encode("utf-8"),
+        salt.encode("utf-8"),
+        200_000,
+    ).hex()
+
 
 def _new_user(username: str, password: str) -> dict:
-    salt = secrets.token_hex(8)
-    return {"username": username.lower(), "salt": salt, "hash": _hash(password, salt)}
+    salt = secrets.token_hex(16)
+
+    return {
+        "username": username.lower(),
+        "salt": salt,
+        "hash": _hash(password, salt),
+    }
+
 
 def load() -> dict:
     if STORE.exists():
-        return json.loads(STORE.read_text())
-    db = {"secret": secrets.token_hex(32), "providers": [],
-          "user": _new_user(os.getenv("ADMIN_USER", "demouser1"), os.getenv("ADMIN_PASSWORD", "Demopass@123"))}
+        try:
+            return json.loads(STORE.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+
+    admin_user = os.getenv("ADMIN_USER", "demouser1")
+    admin_password = os.getenv("ADMIN_PASSWORD")
+
+    if not admin_password:
+        # Do not use a predictable production password.
+        admin_password = secrets.token_urlsafe(18)
+
+    db = {
+        "secret": secrets.token_hex(32),
+        "providers": [],
+        "user": _new_user(admin_user, admin_password),
+    }
+
     seed = os.getenv("PROVIDERS_JSON")
+
     if seed:
-        for p in json.loads(seed):
-            db["providers"].append({"id": secrets.token_hex(4), "name": p["name"], "base_url": p["base_url"].rstrip("/"),
-                                    "api_key": p.get("api_key", ""), "models": p.get("models", [])})
-    save(db); return db
+        try:
+            providers = json.loads(seed)
+
+            for provider in providers:
+                db["providers"].append(
+                    {
+                        "id": secrets.token_hex(4),
+                        "name": provider["name"],
+                        "base_url": clean_url(provider["base_url"]),
+                        "api_key": provider.get("api_key", ""),
+                        "models": provider.get("models", []),
+                    }
+                )
+
+        except Exception as exc:
+            raise RuntimeError(
+                f"Invalid PROVIDERS_JSON: {exc}"
+            ) from exc
+
+    save(db)
+
+    return db
+
 
 def save(db: dict) -> None:
-    tmp = STORE.with_suffix(".tmp"); tmp.write_text(json.dumps(db, indent=2)); tmp.replace(STORE)
+    tmp = STORE.with_suffix(".tmp")
+
+    tmp.write_text(
+        json.dumps(db, indent=2),
+        encoding="utf-8",
+    )
+
+    tmp.replace(STORE)
+
 
 DB = load()
-SECRET = (os.getenv("SECRET_KEY") or DB["secret"]).encode()
 
-# ---------------- auth (signed cookie) ----------------
-def _sign(p: str) -> str: return hmac.new(SECRET, p.encode(), hashlib.sha256).hexdigest()
+SECRET = (
+    os.getenv("SECRET_KEY")
+    or DB["secret"]
+).encode("utf-8")
+
+# ============================================================
+# AUTH
+# ============================================================
+
+
+def _sign(payload: str) -> str:
+    return hmac.new(
+        SECRET,
+        payload.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
 
 def make_token(user: str) -> str:
-    p = f"{user}|{int(time.time()) + 7 * 86400}"
-    return base64.urlsafe_b64encode(p.encode()).decode() + "." + _sign(p)
+    payload = f"{user}|{int(time.time()) + 7 * 86400}"
 
-def read_token(t: str | None):
+    encoded = base64.urlsafe_b64encode(
+        payload.encode("utf-8")
+    ).decode("ascii")
+
+    return encoded + "." + _sign(payload)
+
+
+def read_token(token: str | None):
+    if not token:
+        return None
+
     try:
-        b, sig = t.rsplit(".", 1); p = base64.urlsafe_b64decode(b.encode()).decode()
-        if not hmac.compare_digest(sig, _sign(p)): return None
-        u, exp = p.rsplit("|", 1)
-        return u if int(exp) > time.time() else None
+        encoded, signature = token.rsplit(".", 1)
+
+        payload = base64.urlsafe_b64decode(
+            encoded.encode("ascii")
+        ).decode("utf-8")
+
+        expected = _sign(payload)
+
+        if not hmac.compare_digest(
+            signature,
+            expected,
+        ):
+            return None
+
+        username, expiry = payload.rsplit("|", 1)
+
+        if int(expiry) <= int(time.time()):
+            return None
+
+        return username
+
     except Exception:
         return None
 
-def set_cookie(resp: Response, req: Request, user: str):
-    secure = req.headers.get("x-forwarded-proto", req.url.scheme) == "https"
-    resp.set_cookie("modleo", make_token(user), httponly=True, samesite="lax", secure=secure, max_age=7 * 86400)
+
+def set_cookie(
+    response: Response,
+    request: Request,
+    user: str,
+):
+    forwarded_proto = request.headers.get(
+        "x-forwarded-proto"
+    )
+
+    secure = (
+        forwarded_proto == "https"
+        or request.url.scheme == "https"
+    )
+
+    response.set_cookie(
+        key="modleo",
+        value=make_token(user),
+        httponly=True,
+        samesite="lax",
+        secure=secure,
+        max_age=7 * 86400,
+        path="/",
+    )
+
 
 def require_user(request: Request) -> str:
-    u = read_token(request.cookies.get("modleo"))
-    if not u: raise HTTPException(401, "Not signed in")
-    return u
+    username = read_token(
+        request.cookies.get("modleo")
+    )
+
+    if not username:
+        raise HTTPException(
+            status_code=401,
+            detail="Not signed in",
+        )
+
+    return username
+
 
 FAILS: dict[str, list] = {}
 
-# ---------------- error explanations ----------------
-def explain(status: int, text: str) -> dict:
-    msg = text
+# ============================================================
+# URL / SECURITY
+# ============================================================
+
+
+def clean_url(url: str) -> str:
+    url = url.strip().rstrip("/")
+
+    parsed = urlparse(url)
+
+    if parsed.scheme not in ("http", "https"):
+        raise HTTPException(
+            400,
+            "Base URL must start with http:// or https://",
+        )
+
+    if not parsed.netloc:
+        raise HTTPException(
+            400,
+            "Invalid provider URL",
+        )
+
+    if parsed.username or parsed.password:
+        raise HTTPException(
+            400,
+            "Credentials must not be embedded in the URL",
+        )
+
+    return url
+
+
+def validate_provider_host(url: str) -> None:
+    """
+    Basic SSRF protection.
+
+    Prevents the gateway from accidentally being used to
+    access localhost/private network addresses.
+    """
+
+    parsed = urlparse(url)
+    hostname = parsed.hostname
+
+    if not hostname:
+        raise HTTPException(400, "Invalid provider hostname")
+
+    hostname_lower = hostname.lower()
+
+    blocked_names = {
+        "localhost",
+        "localhost.localdomain",
+        "metadata.google.internal",
+        "host.docker.internal",
+    }
+
+    if hostname_lower in blocked_names:
+        raise HTTPException(
+            400,
+            "Private/local provider addresses are not allowed",
+        )
+
     try:
-        j = json.loads(text); e = j.get("error")
-        msg = (e.get("message") if isinstance(e, dict) else e) or j.get("message") or text
-    except Exception:
-        pass
-    msg = str(msg); low = (msg + " " + text).lower()
-    def R(kind, title, hint, scope, m=None):
-        return {"kind": kind, "title": title, "hint": hint, "scope": scope, "status": status, "msg": (msg if m is None else m)[:300]}
-    if text.lstrip()[:1] == "<":
-        t = re.search(r"<title>([^<]*)", text, re.I); c = re.search(r"error code:?\s*(\d{4})", text, re.I)
-        ip = re.search(r"Your IP:[\s\S]{0,120}?((?:\d{1,3}\.){3}\d{1,3})", text, re.I)
-        extra = " · ".join(x for x in [t and t.group(1).strip(), c and "Error " + c.group(1), ip and "Blocked IP " + ip.group(1)] if x)
-        return R("block", "Blocked by the provider firewall",
-                 "The gateway returned a block page. Its firewall rejects requests from this server's network. Run Modleo from a different network, use another gateway, or ask the provider to allow API traffic.", "provider", extra)
-    if re.search(r"quota|insufficient|额度|credit|balance|billing|余额|arrear", low) or status == 402:
-        return R("quota", "Out of credits", "This provider account has no balance left. Top up or claim free credits on the provider site, or switch provider.", "provider")
-    if status == 401 or re.search(r"invalid token|invalid api key|incorrect api key|unauthorized", low):
-        return R("auth", "API key rejected", "Update the key in Providers & keys. Check for extra spaces.", "provider")
-    if status == 404 or re.search(r"model.*(not found|does not exist|not available)|no available channel|无可用渠道", low):
-        return R("model", "Model not available", "Your key may not have access to this model. Pick one from the Fetch models list.", "model")
-    if status == 403: return R("denied", "Access denied", "The provider refused the request. Check your key, plan and allowed models.", "provider")
-    if status == 429 or re.search(r"rate limit|too many", low): return R("rate", "Rate limited", "Too many requests. Wait a minute or switch model or provider.", "retry")
-    if status >= 500: return R("server", "Provider error", "A temporary problem on the provider side. Try again or switch.", "retry")
-    return R("other", f"Request failed (HTTP {status})", "", "none")
+        addresses = socket.getaddrinfo(
+            hostname,
+            parsed.port or (
+                443 if parsed.scheme == "https" else 80
+            ),
+            type=socket.SOCK_STREAM,
+        )
 
-def net_error(e: Exception, base: str) -> dict:
-    return {"kind": "net", "title": "Cannot reach the provider", "scope": "provider", "status": 0, "msg": str(e)[:200],
-            "hint": f"The server could not connect to {urlparse(base).netloc}. Check the base URL."}
+        for item in addresses:
+            address = item[4][0]
 
-def fail(info: dict) -> JSONResponse:  # upstream problems are 502 so 401 always means "session expired"
-    return JSONResponse({"error": info}, status_code=502)
+            ip = ipaddress.ip_address(address)
 
-# ---------------- models ----------------
-class LoginIn(BaseModel): username: str; password: str
-class AccountIn(BaseModel): username: str = Field(min_length=3); password: str = Field(min_length=6)
-class ProviderIn(BaseModel): name: str = Field(min_length=1); base_url: str; api_key: str = ""; models: list[str] = Field(min_length=1)
-class ModelsIn(BaseModel): base_url: str; api_key: str = ""
-class ChatIn(BaseModel): provider_id: str; model: str; messages: list[dict]; temperature: float | None = None
+            if (
+                ip.is_private
+                or ip.is_loopback
+                or ip.is_link_local
+                or ip.is_reserved
+            ):
+                raise HTTPException(
+                    400,
+                    "Private/internal provider addresses are not allowed",
+                )
+
+    except socket.gaierror as exc:
+        raise HTTPException(
+            400,
+            f"Cannot resolve provider host: {hostname}",
+        ) from exc
+
+
+# ============================================================
+# HTTP CLIENT
+# ============================================================
+
 
 def headers_for(key: str) -> dict:
-    h = {"User-Agent": UA, "Content-Type": "application/json", "Accept": "*/*"}
-    if key: h["Authorization"] = "Bearer " + key
-    return h
+    headers = {
+        "User-Agent": UA,
+        "Accept": "application/json, text/event-stream, */*",
+        "Content-Type": "application/json",
+    }
 
-def public(p: dict) -> dict:
-    return {"id": p["id"], "name": p["name"], "base_url": p["base_url"], "models": p["models"], "has_key": bool(p["api_key"])}
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
 
-def find(pid: str) -> dict:
-    p = next((x for x in DB["providers"] if x["id"] == pid), None)
-    if not p: raise HTTPException(404, "Unknown provider")
-    return p
+    return headers
 
-def clean_url(u: str) -> str:
-    u = u.strip().rstrip("/")
-    if urlparse(u).scheme not in ("http", "https") or not urlparse(u).netloc: raise HTTPException(400, "Base URL must start with http:// or https://")
-    return u
 
-# ---------------- routes: auth ----------------
+def create_client() -> httpx.AsyncClient:
+    timeout = httpx.Timeout(
+        timeout=REQUEST_TIMEOUT,
+        connect=CONNECT_TIMEOUT,
+        read=REQUEST_TIMEOUT,
+        write=REQUEST_TIMEOUT,
+        pool=REQUEST_TIMEOUT,
+    )
+
+    return httpx.AsyncClient(
+        timeout=timeout,
+        follow_redirects=True,
+        limits=httpx.Limits(
+            max_connections=100,
+            max_keepalive_connections=20,
+        ),
+    )
+
+
+# ============================================================
+# ERROR HANDLING
+# ============================================================
+
+
+def extract_error_message(text: str) -> str:
+    if not text:
+        return ""
+
+    try:
+        data = json.loads(text)
+
+        error = data.get("error")
+
+        if isinstance(error, dict):
+            message = (
+                error.get("message")
+                or error.get("detail")
+                or error.get("type")
+            )
+
+            if message:
+                return str(message)
+
+        if isinstance(error, str):
+            return error
+
+        message = data.get("message")
+
+        if message:
+            return str(message)
+
+    except Exception:
+        pass
+
+    return text.strip()
+
+
+def explain(
+    status: int,
+    text: str,
+    headers: httpx.Headers | None = None,
+) -> dict:
+
+    text = text or ""
+
+    msg = extract_error_message(text)
+
+    low = (
+        msg + " " + text
+    ).lower()
+
+    content_type = ""
+
+    if headers:
+        content_type = headers.get(
+            "content-type",
+            "",
+        ).lower()
+
+    # --------------------------------------------------------
+    # Cloudflare / HTML firewall page
+    # --------------------------------------------------------
+
+    if (
+        "text/html" in content_type
+        or text.lstrip().startswith("<!doctype")
+        or text.lstrip().startswith("<html")
+        or "<title>" in text.lower()
+    ):
+
+        title_match = re.search(
+            r"<title>\s*(.*?)\s*</title>",
+            text,
+            re.I | re.S,
+        )
+
+        code_match = re.search(
+            r"(?:error code|ray id)[^\d]*(\d{3,4})",
+            text,
+            re.I,
+        )
+
+        ray_match = re.search(
+            r"Ray ID[:\s]*([a-zA-Z0-9]+)",
+            text,
+            re.I,
+        )
+
+        details = []
+
+        if title_match:
+            details.append(
+                re.sub(
+                    r"\s+",
+                    " ",
+                    title_match.group(1),
+                ).strip()
+            )
+
+        if code_match:
+            details.append(
+                f"HTTP/Cloudflare code {code_match.group(1)}"
+            )
+
+        if ray_match:
+            details.append(
+                f"Ray ID {ray_match.group(1)}"
+            )
+
+        return {
+            "kind": "firewall",
+            "title": "Provider firewall blocked the server",
+            "hint": (
+                "The third-party gateway returned an HTML "
+                "firewall/block page instead of an LLM API "
+                "response. This is not a browser CORS problem. "
+                "The provider is blocking the network/IP used "
+                "by this backend."
+            ),
+            "scope": "provider",
+            "status": status,
+            "msg": " · ".join(details)[:500]
+            or "Provider returned an HTML block page.",
+        }
+
+    # --------------------------------------------------------
+    # Authentication
+    # --------------------------------------------------------
+
+    if (
+        status == 401
+        or re.search(
+            r"invalid token|invalid api key|incorrect api key|unauthorized",
+            low,
+        )
+    ):
+        return {
+            "kind": "auth",
+            "title": "API key rejected",
+            "hint": (
+                "The provider rejected the API key. "
+                "Check the key, provider endpoint and "
+                "authentication format."
+            ),
+            "scope": "provider",
+            "status": status,
+            "msg": msg[:500],
+        }
+
+    # --------------------------------------------------------
+    # Forbidden
+    # --------------------------------------------------------
+
+    if status == 403:
+        return {
+            "kind": "denied",
+            "title": "Provider denied the request",
+            "hint": (
+                "The provider refused this request. "
+                "Check account permissions, model access, "
+                "IP restrictions and provider policy."
+            ),
+            "scope": "provider",
+            "status": status,
+            "msg": msg[:500],
+        }
+
+    # --------------------------------------------------------
+    # Rate limit
+    # --------------------------------------------------------
+
+    if (
+        status == 429
+        or re.search(
+            r"rate.?limit|too many requests",
+            low,
+        )
+    ):
+        return {
+            "kind": "rate",
+            "title": "Provider rate limit",
+            "hint": (
+                "The provider is rate limiting requests. "
+                "Wait and retry or use another provider/model."
+            ),
+            "scope": "retry",
+            "status": status,
+            "msg": msg[:500],
+        }
+
+    # --------------------------------------------------------
+    # Credits
+    # --------------------------------------------------------
+
+    if (
+        status == 402
+        or re.search(
+            r"quota|insufficient|credit|balance|billing|arrear",
+            low,
+        )
+    ):
+        return {
+            "kind": "quota",
+            "title": "Provider credits unavailable",
+            "hint": (
+                "The provider account appears to have "
+                "insufficient credits or billing capacity."
+            ),
+            "scope": "provider",
+            "status": status,
+            "msg": msg[:500],
+        }
+
+    # --------------------------------------------------------
+    # Model
+    # --------------------------------------------------------
+
+    if (
+        status == 404
+        or re.search(
+            r"model.*(?:not found|does not exist|not available)"
+            r"|no available channel",
+            low,
+        )
+    ):
+        return {
+            "kind": "model",
+            "title": "Model not available",
+            "hint": (
+                "The provider does not appear to expose "
+                "this model for this API key."
+            ),
+            "scope": "model",
+            "status": status,
+            "msg": msg[:500],
+        }
+
+    # --------------------------------------------------------
+    # Provider server error
+    # --------------------------------------------------------
+
+    if status >= 500:
+        return {
+            "kind": "server",
+            "title": "Provider server error",
+            "hint": (
+                "The provider returned a server-side error. "
+                "Retry or switch provider."
+            ),
+            "scope": "retry",
+            "status": status,
+            "msg": msg[:500],
+        }
+
+    return {
+        "kind": "other",
+        "title": f"Request failed (HTTP {status})",
+        "hint": "Inspect the provider response.",
+        "scope": "none",
+        "status": status,
+        "msg": msg[:500],
+    }
+
+
+def net_error(
+    exc: Exception,
+    base: str,
+) -> dict:
+
+    return {
+        "kind": "network",
+        "title": "Cannot reach provider",
+        "scope": "provider",
+        "status": 0,
+        "msg": str(exc)[:500],
+        "hint": (
+            f"The backend could not connect to "
+            f"{urlparse(base).netloc}. "
+            "Check DNS, TLS, firewall and provider availability."
+        ),
+    }
+
+
+def fail(info: dict) -> JSONResponse:
+    return JSONResponse(
+        {"error": info},
+        status_code=502,
+    )
+
+
+# ============================================================
+# MODELS
+# ============================================================
+
+
+class LoginIn(BaseModel):
+    username: str
+    password: str
+
+
+class AccountIn(BaseModel):
+    username: str = Field(
+        min_length=3,
+        max_length=64,
+    )
+
+    password: str = Field(
+        min_length=8,
+        max_length=256,
+    )
+
+
+class ProviderIn(BaseModel):
+    name: str = Field(
+        min_length=1,
+        max_length=100,
+    )
+
+    base_url: str
+
+    api_key: str = ""
+
+    models: list[str] = Field(
+        min_length=1,
+        max_length=200,
+    )
+
+    @field_validator("base_url")
+    @classmethod
+    def validate_base_url(cls, value):
+        return clean_url(value)
+
+
+class ModelsIn(BaseModel):
+    base_url: str
+    api_key: str = ""
+
+    @field_validator("base_url")
+    @classmethod
+    def validate_base_url(cls, value):
+        return clean_url(value)
+
+
+class ChatIn(BaseModel):
+    provider_id: str
+    model: str = Field(
+        min_length=1,
+        max_length=200,
+    )
+    messages: list[dict]
+    temperature: float | None = None
+
+
+# ============================================================
+# PROVIDERS
+# ============================================================
+
+
+def public(provider: dict) -> dict:
+    return {
+        "id": provider["id"],
+        "name": provider["name"],
+        "base_url": provider["base_url"],
+        "models": provider["models"],
+        "has_key": bool(provider["api_key"]),
+    }
+
+
+def find(provider_id: str) -> dict:
+    provider = next(
+        (
+            p
+            for p in DB["providers"]
+            if p["id"] == provider_id
+        ),
+        None,
+    )
+
+    if not provider:
+        raise HTTPException(
+            404,
+            "Unknown provider",
+        )
+
+    return provider
+
+
+# ============================================================
+# AUTH ROUTES
+# ============================================================
+
+
 @app.post("/api/login")
-def login(body: LoginIn, request: Request):
-    ip = request.client.host if request.client else "?"; now = time.time()
-    n, first = FAILS.get(ip, [0, now])
-    if now - first > 600: n, first = 0, now
-    if n >= 8: raise HTTPException(429, "Too many attempts. Try again in a few minutes.")
-    u = DB["user"]
-    ok = body.username.strip().lower() == u["username"] and hmac.compare_digest(_hash(body.password, u["salt"]), u["hash"])
-    if not ok:
-        FAILS[ip] = [n + 1, first]; raise HTTPException(401, "Wrong username or password")
+def login(
+    body: LoginIn,
+    request: Request,
+):
+
+    ip = (
+        request.client.host
+        if request.client
+        else "unknown"
+    )
+
+    now = time.time()
+
+    attempts, first = FAILS.get(
+        ip,
+        [0, now],
+    )
+
+    if now - first > 600:
+        attempts = 0
+        first = now
+
+    if attempts >= 8:
+        raise HTTPException(
+            429,
+            "Too many attempts. Try again later.",
+        )
+
+    user = DB["user"]
+
+    valid = (
+        body.username.strip().lower()
+        == user["username"]
+        and hmac.compare_digest(
+            _hash(
+                body.password,
+                user["salt"],
+            ),
+            user["hash"],
+        )
+    )
+
+    if not valid:
+        FAILS[ip] = [
+            attempts + 1,
+            first,
+        ]
+
+        raise HTTPException(
+            401,
+            "Wrong username or password",
+        )
+
     FAILS.pop(ip, None)
-    resp = JSONResponse({"username": u["username"]}); set_cookie(resp, request, u["username"]); return resp
+
+    response = JSONResponse(
+        {
+            "username": user["username"],
+        }
+    )
+
+    set_cookie(
+        response,
+        request,
+        user["username"],
+    )
+
+    return response
+
 
 @app.post("/api/logout")
 def logout():
-    resp = JSONResponse({"ok": True}); resp.delete_cookie("modleo"); return resp
+    response = JSONResponse(
+        {"ok": True}
+    )
+
+    response.delete_cookie(
+        "modleo",
+        path="/",
+    )
+
+    return response
+
 
 @app.get("/api/me")
-def me(user: str = Depends(require_user)): return {"username": user}
+def me(
+    user: str = Depends(require_user),
+):
+    return {
+        "username": user,
+    }
+
 
 @app.post("/api/account")
-def account(body: AccountIn, request: Request, user: str = Depends(require_user)):
-    DB["user"] = _new_user(body.username.strip(), body.password); save(DB)
-    resp = JSONResponse({"username": DB["user"]["username"]}); set_cookie(resp, request, DB["user"]["username"]); return resp
+def account(
+    body: AccountIn,
+    request: Request,
+    user: str = Depends(require_user),
+):
 
-# ---------------- routes: providers ----------------
+    DB["user"] = _new_user(
+        body.username.strip(),
+        body.password,
+    )
+
+    save(DB)
+
+    response = JSONResponse(
+        {
+            "username": DB["user"]["username"],
+        }
+    )
+
+    set_cookie(
+        response,
+        request,
+        DB["user"]["username"],
+    )
+
+    return response
+
+
+# ============================================================
+# PROVIDER ROUTES
+# ============================================================
+
+
 @app.get("/api/providers")
-def providers(user: str = Depends(require_user)): return [public(p) for p in DB["providers"]]
+def providers(
+    user: str = Depends(require_user),
+):
+    return [
+        public(provider)
+        for provider in DB["providers"]
+    ]
+
 
 @app.post("/api/providers")
-def add_provider(body: ProviderIn, user: str = Depends(require_user)):
-    p = {"id": secrets.token_hex(4), "name": body.name.strip(), "base_url": clean_url(body.base_url),
-         "api_key": body.api_key.strip(), "models": [m.strip() for m in body.models if m.strip()]}
-    DB["providers"].append(p); save(DB); return public(p)
+def add_provider(
+    body: ProviderIn,
+    user: str = Depends(require_user),
+):
 
-@app.delete("/api/providers/{pid}")
-def del_provider(pid: str, user: str = Depends(require_user)):
-    DB["providers"] = [p for p in DB["providers"] if p["id"] != pid]; save(DB); return {"ok": True}
+    base_url = clean_url(
+        body.base_url
+    )
+
+    validate_provider_host(
+        base_url
+    )
+
+    provider = {
+        "id": secrets.token_hex(4),
+        "name": body.name.strip(),
+        "base_url": base_url,
+        "api_key": body.api_key.strip(),
+        "models": [
+            model.strip()
+            for model in body.models
+            if model.strip()
+        ],
+    }
+
+    DB["providers"].append(provider)
+
+    save(DB)
+
+    return public(provider)
+
+
+@app.delete("/api/providers/{provider_id}")
+def delete_provider(
+    provider_id: str,
+    user: str = Depends(require_user),
+):
+
+    original = len(DB["providers"])
+
+    DB["providers"] = [
+        provider
+        for provider in DB["providers"]
+        if provider["id"] != provider_id
+    ]
+
+    if len(DB["providers"]) == original:
+        raise HTTPException(
+            404,
+            "Unknown provider",
+        )
+
+    save(DB)
+
+    return {
+        "ok": True,
+    }
+
+
+# ============================================================
+# FETCH MODELS
+# ============================================================
+
 
 @app.post("/api/models")
-async def fetch_models(body: ModelsIn, user: str = Depends(require_user)):
-    base = clean_url(body.base_url)
+async def fetch_models(
+    body: ModelsIn,
+    user: str = Depends(require_user),
+):
+
+    base = clean_url(
+        body.base_url
+    )
+
+    validate_provider_host(base)
+
     try:
-        async with httpx.AsyncClient(timeout=20) as c:
-            r = await c.get(base + "/models", headers=headers_for(body.api_key.strip()))
-    except httpx.RequestError as e:
-        return fail(net_error(e, base))
-    if r.status_code >= 400: return fail(explain(r.status_code, r.text))
+
+        async with create_client() as client:
+
+            response = await client.get(
+                f"{base}/models",
+                headers=headers_for(
+                    body.api_key.strip()
+                ),
+            )
+
+    except httpx.RequestError as exc:
+
+        return fail(
+            net_error(
+                exc,
+                base,
+            )
+        )
+
+    if response.status_code >= 400:
+
+        return fail(
+            explain(
+                response.status_code,
+                response.text,
+                response.headers,
+            )
+        )
+
     try:
-        j = r.json(); items = j.get("data") or j.get("models") or []
-        return {"models": [str(m.get("id") or m.get("name", "")).removeprefix("models/") for m in items if m.get("id") or m.get("name")]}
+
+        data = response.json()
+
+        items = (
+            data.get("data")
+            or data.get("models")
+            or []
+        )
+
+        models = []
+
+        for item in items:
+
+            if isinstance(item, str):
+                model_id = item
+
+            elif isinstance(item, dict):
+                model_id = (
+                    item.get("id")
+                    or item.get("name")
+                    or ""
+                )
+
+            else:
+                continue
+
+            model_id = str(
+                model_id
+            ).removeprefix("models/")
+
+            if model_id:
+                models.append(model_id)
+
+        return {
+            "models": models,
+        }
+
     except Exception:
-        return fail(explain(200, r.text))
 
-@app.post("/api/providers/{pid}/test")
-async def test_provider(pid: str, user: str = Depends(require_user)):
-    p = find(pid)
+        return fail(
+            explain(
+                response.status_code,
+                response.text,
+                response.headers,
+            )
+        )
+
+
+# ============================================================
+# PROVIDER TEST
+# ============================================================
+
+
+@app.post("/api/providers/{provider_id}/test")
+async def test_provider(
+    provider_id: str,
+    user: str = Depends(require_user),
+):
+
+    provider = find(
+        provider_id
+    )
+
+    if not provider["models"]:
+        return {
+            "ok": False,
+            "error": {
+                "kind": "model",
+                "title": "No model configured",
+                "hint": "Add at least one model.",
+                "scope": "model",
+                "status": 0,
+                "msg": "",
+            },
+        }
+
+    base = provider["base_url"]
+
     try:
-        async with httpx.AsyncClient(timeout=30) as c:
-            r = await c.post(p["base_url"] + "/chat/completions", headers=headers_for(p["api_key"]),
-                             json={"model": p["models"][0], "messages": [{"role": "user", "content": "hi"}], "max_tokens": 1})
-    except httpx.RequestError as e:
-        return {"ok": False, "error": net_error(e, p["base_url"])}
-    return {"ok": True} if r.status_code < 400 else {"ok": False, "error": explain(r.status_code, r.text)}
 
-# ---------------- routes: chat (the core flow) ----------------
+        validate_provider_host(
+            base
+        )
+
+        async with create_client() as client:
+
+            response = await client.post(
+                f"{base}/chat/completions",
+                headers=headers_for(
+                    provider["api_key"]
+                ),
+                json={
+                    "model": provider["models"][0],
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": "hi",
+                        }
+                    ],
+                    "max_tokens": 1,
+                    "stream": False,
+                },
+            )
+
+    except httpx.RequestError as exc:
+
+        return {
+            "ok": False,
+            "error": net_error(
+                exc,
+                base,
+            ),
+        }
+
+    if response.status_code >= 400:
+
+        return {
+            "ok": False,
+            "error": explain(
+                response.status_code,
+                response.text,
+                response.headers,
+            ),
+        }
+
+    return {
+        "ok": True,
+    }
+
+
+# ============================================================
+# CHAT / STREAMING
+# ============================================================
+
+
 @app.post("/api/chat")
-async def chat(body: ChatIn, user: str = Depends(require_user)):
-    p = find(body.provider_id)
-    payload = {"model": body.model, "messages": body.messages, "stream": True}
-    if body.temperature is not None: payload["temperature"] = body.temperature
-    client = httpx.AsyncClient(timeout=httpx.Timeout(180, connect=20))
-    try:
-        r = await client.send(client.build_request("POST", p["base_url"] + "/chat/completions", headers=headers_for(p["api_key"]), json=payload), stream=True)
-    except httpx.RequestError as e:
-        await client.aclose(); return fail(net_error(e, p["base_url"]))
-    if r.status_code >= 400:
-        text = (await r.aread()).decode("utf-8", "replace"); await r.aclose(); await client.aclose()
-        return fail(explain(r.status_code, text))
-    if "application/json" in r.headers.get("content-type", ""):  # provider ignored stream=true
-        data = await r.aread(); await r.aclose(); await client.aclose()
-        return StreamingResponse(iter([b"data: " + data + b"\n\ndata: [DONE]\n\n"]), media_type="text/event-stream")
-    async def gen():
-        try:
-            async for chunk in r.aiter_raw(): yield chunk
-        finally:
-            await r.aclose(); await client.aclose()
-    return StreamingResponse(gen(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+async def chat(
+    body: ChatIn,
+    user: str = Depends(require_user),
+):
 
-# ---------------- frontend ----------------
+    provider = find(
+        body.provider_id
+    )
+
+    validate_provider_host(
+        provider["base_url"]
+    )
+
+    payload = {
+        "model": body.model,
+        "messages": body.messages,
+        "stream": True,
+    }
+
+    if body.temperature is not None:
+        payload["temperature"] = body.temperature
+
+    client = create_client()
+
+    try:
+
+        request = client.build_request(
+            "POST",
+            f"{provider['base_url']}/chat/completions",
+            headers=headers_for(
+                provider["api_key"]
+            ),
+            json=payload,
+        )
+
+        response = await client.send(
+            request,
+            stream=True,
+        )
+
+    except httpx.RequestError as exc:
+
+        await client.aclose()
+
+        return fail(
+            net_error(
+                exc,
+                provider["base_url"],
+            )
+        )
+
+    # --------------------------------------------------------
+    # Provider error
+    # --------------------------------------------------------
+
+    if response.status_code >= 400:
+
+        try:
+            text = await response.aread()
+
+            text = text.decode(
+                "utf-8",
+                "replace",
+            )
+
+        finally:
+
+            await response.aclose()
+            await client.aclose()
+
+        return fail(
+            explain(
+                response.status_code,
+                text,
+                response.headers,
+            )
+        )
+
+    # --------------------------------------------------------
+    # Provider ignored streaming
+    # --------------------------------------------------------
+
+    content_type = response.headers.get(
+        "content-type",
+        "",
+    ).lower()
+
+    if "application/json" in content_type:
+
+        try:
+
+            data = await response.aread()
+
+        finally:
+
+            await response.aclose()
+            await client.aclose()
+
+        return StreamingResponse(
+            iter(
+                [
+                    b"data: "
+                    + data
+                    + b"\n\n"
+                    + b"data: [DONE]\n\n"
+                ]
+            ),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    # --------------------------------------------------------
+    # Streaming response
+    # --------------------------------------------------------
+
+    async def generate():
+
+        try:
+
+            async for chunk in response.aiter_raw():
+
+                if chunk:
+                    yield chunk
+
+        except httpx.StreamError:
+            # Client disconnected or upstream stream failed.
+            return
+
+        finally:
+
+            await response.aclose()
+            await client.aclose()
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+# ============================================================
+# HEALTH
+# ============================================================
+
+
 @app.get("/healthz")
-def healthz(): return {"ok": True}
+def healthz():
+    return {
+        "ok": True,
+        "service": "modleo",
+    }
+
+
+@app.get("/api/debug/ip")
+async def debug_ip(
+    user: str = Depends(require_user),
+):
+
+    """
+    Shows the public IP used by this backend.
+
+    Useful for diagnosing provider firewall blocks.
+    """
+
+    try:
+
+        async with create_client() as client:
+
+            response = await client.get(
+                "https://api.ipify.org?format=json"
+            )
+
+            response.raise_for_status()
+
+            return {
+                "backend_public_ip": response.json().get(
+                    "ip"
+                )
+            }
+
+    except Exception as exc:
+
+        return {
+            "error": str(exc)
+        }
+
+
+# ============================================================
+# FRONTEND
+# ============================================================
+
 
 @app.get("/")
-def index(): return FileResponse(Path(__file__).parent / "static" / "index.html")
+def index():
+
+    frontend = (
+        Path(__file__).parent
+        / "static"
+        / "index.html"
+    )
+
+    if not frontend.exists():
+
+        raise HTTPException(
+            404,
+            "Frontend not found: static/index.html",
+        )
+
+    return FileResponse(
+        frontend
+    )
